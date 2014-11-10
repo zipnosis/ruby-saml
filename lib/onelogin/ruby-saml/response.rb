@@ -142,7 +142,7 @@ module OneLogin
         validate_response_state(soft) &&
         validate_conditions(soft)     &&
         validate_issuer(soft)         &&
-        document.validate_document(get_fingerprint, soft) &&
+        (settings.do_not_verify_cert || document.validate_document(get_fingerprint, soft)) &&
         validate_success_status(soft)
       end
 

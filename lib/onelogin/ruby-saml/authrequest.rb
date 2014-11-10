@@ -68,7 +68,7 @@ module OneLogin
           }
         end
 
-        if settings.authn_context || settings.authn_context_decl_ref
+        if settings.authn_context || settings.authn_context_decl_ref || settings.authn_attributes
 
           if settings.authn_context_comparison != nil
             comparison = settings.authn_context_comparison
@@ -93,6 +93,18 @@ module OneLogin
               "xmlns:saml" => "urn:oasis:names:tc:SAML:2.0:assertion",
             }
             class_ref.text = settings.authn_context_decl_ref
+          end
+          if settings.authn_attributes && settings.authn_attributes.any?
+            extensions = root.add_element "samlp:Extensions", {
+              "xmlns:samlp" => "urn:oasis:names:tc:SAML:2.0:protocol",
+              "Comparison" => "exact",
+            }
+            settings.authn_attributes.each do |attribute|
+              class_ref = extensions.add_element "saml:Attribute", {
+                "NameFormat" => "urn:oasis:names:tc:SAML:2.0:attrname-format:uri",
+                "Name" => attribute
+              }
+            end
           end
         end
 
