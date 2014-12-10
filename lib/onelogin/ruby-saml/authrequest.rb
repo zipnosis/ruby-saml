@@ -21,6 +21,7 @@ module OneLogin
         request_doc.write(request)
 
         Logging.debug "Created AuthnRequest: #{request}"
+        puts "Created AuthnRequest: #{request}"
 
         request           = Zlib::Deflate.deflate(request, 9)[2..-5] if settings.compress_request
         base64_request    = Base64.encode64(request)
