@@ -6,9 +6,9 @@ module OneLogin
         return if !!ENV["ruby-saml/testing"]
 
         if defined? Rails
-          Rails.logger.error message
+          Rails.logger.debug message
         else
-          Rails.logger.error message
+          puts message
         end
       end
 
@@ -16,9 +16,9 @@ module OneLogin
         return if !!ENV["ruby-saml/testing"]
 
         if defined? Rails
-          Rails.logger.error message
+          Rails.logger.info message
         else
-          Rails.logger.error message
+          puts message
         end
       end
     end
