@@ -1,7 +1,8 @@
 require 'rubygems'
-require 'bundler'
 require 'test/unit'
+require 'shoulda'
 require 'mocha/setup'
+require 'timecop'
 
 Bundler.require :default, :test
 
