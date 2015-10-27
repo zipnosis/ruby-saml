@@ -1,4 +1,6 @@
 require "xml_security"
+require "onelogin/ruby-saml/attributes"
+
 require "time"
 require "nokogiri"
 
@@ -138,7 +140,7 @@ module OneLogin
         validate_response_state(soft) &&
         validate_conditions(soft)     &&
         validate_issuer(soft)         &&
-        (settings.do_not_verify_cert || document.validate_document(get_fingerprint, soft)) &&
+        (settings.do_not_verify_cert || document.validate_document(get_fingerprint, soft, :fingerprint_alg => settings.idp_cert_fingerprint_algorithm)) &&
         validate_success_status(soft)
       end
 
@@ -151,19 +153,18 @@ module OneLogin
       end
 
       def validate_structure(soft = true)
-        Dir.chdir(File.expand_path(File.join(File.dirname(__FILE__), '..', '..', 'schemas'))) do
-          @schema = Nokogiri::XML::Schema(IO.read('saml-schema-protocol-2.0.xsd'))
-          @xml = Nokogiri::XML(self.document.to_s)
-        end
-        if soft
-          @schema.validate(@xml).map{
-            @errors << "Schema validation failed";
-            return false
-          }
-        else
-          @schema.validate(@xml).map{ |error| @errors << "#{error.message}\n\n#{@xml.to_s}";
-            validation_error("#{error.message}\n\n#{@xml.to_s}")
-          }
+        xml = Nokogiri::XML(self.document.to_s)
+
+        SamlMessage.schema.validate(xml).map do |error|
+          if soft
+            @errors << "Schema validation failed"
+            break false
+          else
+            error_message = [error.message, xml.to_s].join("\n\n")
+
+            @errors << error_message
+            validation_error(error_message)
+          end
         end
       end
 
@@ -202,7 +203,8 @@ module OneLogin
       def get_fingerprint
         if settings.idp_cert
           cert = OpenSSL::X509::Certificate.new(settings.idp_cert)
-          Digest::SHA1.hexdigest(cert.to_der).upcase.scan(/../).join(":")
+          fingerprint_alg = XMLSecurity::BaseDocument.new.algorithm(settings.idp_cert_fingerprint_algorithm).new
+          fingerprint_alg.hexdigest(cert.to_der).upcase.scan(/../).join(":")
         else
           settings.idp_cert_fingerprint
         end

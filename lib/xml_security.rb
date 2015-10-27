@@ -56,8 +56,9 @@ module XMLSecurity
       algorithm = element
       if algorithm.is_a?(REXML::Element)
         algorithm = element.attribute("Algorithm").value
-        algorithm = algorithm && algorithm =~ /sha(.*?)$/i && $1.to_i
       end
+
+      algorithm = algorithm && algorithm =~ /(rsa-)?sha(.*?)$/i && $2.to_i
 
       case algorithm
       when 256 then OpenSSL::Digest::SHA256
@@ -71,14 +72,24 @@ module XMLSecurity
   end
 
   class Document < BaseDocument
-    SHA1            = "http://www.w3.org/2000/09/xmldsig#rsa-sha1"
-    SHA256          = "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"
-    SHA384          = "http://www.w3.org/2001/04/xmldsig-more#rsa-sha384"
-    SHA512          = "http://www.w3.org/2001/04/xmldsig-more#rsa-sha512"
+    RSA_SHA1            = "http://www.w3.org/2000/09/xmldsig#rsa-sha1"
+    RSA_SHA256            = "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"
+    RSA_SHA384            = "http://www.w3.org/2001/04/xmldsig-more#rsa-sha384"
+    RSA_SHA512            = "http://www.w3.org/2001/04/xmldsig-more#rsa-sha512"
+    SHA1            = "http://www.w3.org/2000/09/xmldsig#sha1"
+    SHA256          = "http://www.w3.org/2001/04/xmldsig-more#sha256"
+    SHA384          = "http://www.w3.org/2001/04/xmldsig-more#sha384"
+    SHA512          = "http://www.w3.org/2001/04/xmldsig-more#sha512"
     ENVELOPED_SIG   = "http://www.w3.org/2000/09/xmldsig#enveloped-signature"
-    INC_PREFIX_LIST = "#default samlp saml ds xs xsi"
+    INC_PREFIX_LIST = "#default samlp saml ds xs xsi md"
 
     attr_accessor :uuid
+
+    def uuid
+      @uuid ||= begin
+        document.root.nil? ? nil : document.root.attributes['ID']
+      end
+    end
 
     #<Signature>
       #<SignedInfo>
@@ -95,9 +106,8 @@ module XMLSecurity
       #<KeyInfo />
       #<Object />
     #</Signature>
-    def sign_document(private_key, certificate, signature_method = SHA1, digest_method = SHA1)
+    def sign_document(private_key, certificate, signature_method = RSA_SHA1, digest_method = SHA1)
       noko = Nokogiri.parse(self.to_s)
-      canon_doc = noko.canonicalize(canon_algorithm(C14N))
 
       signature_element = REXML::Element.new("ds:Signature").add_namespace('ds', DSIG)
       signed_info_element = signature_element.add_element("ds:SignedInfo")
@@ -110,16 +120,19 @@ module XMLSecurity
       # Add Transforms
       transforms_element = reference_element.add_element("ds:Transforms")
       transforms_element.add_element("ds:Transform", {"Algorithm" => ENVELOPED_SIG})
-      transforms_element.add_element("ds:Transform", {"Algorithm" => C14N})
-      transforms_element.add_element("ds:InclusiveNamespaces", {"xmlns" => C14N, "PrefixList" => INC_PREFIX_LIST})
+      c14element = transforms_element.add_element("ds:Transform", {"Algorithm" => C14N})
+      c14element.add_element("ec:InclusiveNamespaces", {"xmlns:ec" => C14N, "PrefixList" => INC_PREFIX_LIST})
 
       digest_method_element = reference_element.add_element("ds:DigestMethod", {"Algorithm" => digest_method})
+      inclusive_namespaces = INC_PREFIX_LIST.split(" ")
+      canon_doc = noko.canonicalize(canon_algorithm(C14N), inclusive_namespaces)
       reference_element.add_element("ds:DigestValue").text = compute_digest(canon_doc, algorithm(digest_method_element))
 
       # add SignatureValue
       noko_sig_element = Nokogiri.parse(signature_element.to_s)
       noko_signed_info_element = noko_sig_element.at_xpath('//ds:Signature/ds:SignedInfo', 'ds' => DSIG)
       canon_string = noko_signed_info_element.canonicalize(canon_algorithm(C14N))
+
       signature = compute_signature(private_key, algorithm(signature_method).new, canon_string)
       signature_element.add_element("ds:SignatureValue").text = signature
 
@@ -137,7 +150,11 @@ module XMLSecurity
       if issuer_element
         self.root.insert_after issuer_element, signature_element
       else
-        self.root.add_element(signature_element)
+        if sp_sso_descriptor = self.elements["/md:EntityDescriptor"]
+          self.root.insert_before sp_sso_descriptor, signature_element
+        else
+          self.root.add_element(signature_element)
+        end
       end
     end
 
@@ -165,7 +182,7 @@ module XMLSecurity
       extract_signed_element_id
     end
 
-    def validate_document(idp_cert_fingerprint, soft = true)
+    def validate_document(idp_cert_fingerprint, soft = true, options = {})
       # get cert from response
       cert_element = REXML::XPath.first(self, "//ds:X509Certificate", { "ds"=>DSIG })
       unless cert_element
@@ -175,13 +192,18 @@ module XMLSecurity
           raise OneLogin::RubySaml::ValidationError.new("Certificate element missing in response (ds:X509Certificate)")
         end
       end
-      base64_cert  = cert_element.text
-      cert_text    = Base64.decode64(base64_cert)
-      cert         = OpenSSL::X509::Certificate.new(cert_text)
+      base64_cert = cert_element.text
+      cert_text = Base64.decode64(base64_cert)
+      cert = OpenSSL::X509::Certificate.new(cert_text)
+
+      if options[:fingerprint_alg]
+        fingerprint_alg = XMLSecurity::BaseDocument.new.algorithm(options[:fingerprint_alg]).new
+      else
+        fingerprint_alg = OpenSSL::Digest::SHA1.new
+      end
+      fingerprint = fingerprint_alg.hexdigest(cert.to_der)
 
       # check cert matches registered idp cert
-      fingerprint = Digest::SHA1.hexdigest(cert.to_der)
-
       if fingerprint != idp_cert_fingerprint.gsub(/[^a-zA-Z0-9]/,"").downcase
         @errors << "Fingerprint mismatch"
         return soft ? false : (raise OneLogin::RubySaml::ValidationError.new("Fingerprint mismatch"))

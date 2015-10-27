@@ -18,7 +18,7 @@ We created a demo project for Rails4 that uses the latest version of this librar
 * 1.8.7
 * 1.9.x
 * 2.1.x
-* 2.2 (not yet officially supported)
+* 2.2.0
 
 ## Adding Features, Pull Requests
 * Fork the repository
@@ -41,7 +41,7 @@ gem 'ruby-saml', '~> 0.9.1'
 gem 'ruby-saml', :github => 'onelogin/ruby-saml'
 ```
 
-Using Bundler
+Using RubyGems
 
 ```sh
 gem install ruby-saml
@@ -57,6 +57,22 @@ or just the required components individually:
 ```ruby
 require 'onelogin/ruby-saml/authrequest'
 ```
+
+### Installation on Ruby 1.8.7
+
+This gem has a dependency on Nokogiri, which dropped support for Ruby 1.8.x in Nokogiri 1.6. When installing this gem on Ruby 1.8.7, you will need to make sure a version of Nokogiri prior to 1.6 is installed or specified if it hasn't been already.
+
+Using `Gemfile`
+
+```ruby
+gem 'nokogiri', '~> 1.5.10'
+```
+
+Using RubyGems
+
+```sh
+gem install nokogiri --version '~> 1.5.10'
+````
 
 ## The Initialization Phase
 
@@ -100,6 +116,7 @@ def saml_settings
   settings.idp_sso_target_url             = "https://app.onelogin.com/trust/saml2/http-post/sso/#{OneLoginAppId}"
   settings.idp_slo_target_url             = "https://app.onelogin.com/trust/saml2/http-redirect/slo/#{OneLoginAppId}"
   settings.idp_cert_fingerprint           = OneLoginAppCertFingerPrint
+  settings.idp_cert_fingerprint_algorithm = "http://www.w3.org/2000/09/xmldsig#sha1"
   settings.name_identifier_format         = "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress"
 
   # Optional for most SAML IdPs
@@ -192,7 +209,7 @@ The following attributes are set:
   * idp_slo_target_url
   * id_cert_fingerpint
 
-If are using saml:AttributeStatement to transfer metadata, like the user name, you can access all the attributes through response.attributes. It contains all the saml:AttributeStatement with its 'Name' as a indifferent key the one/more saml:AttributeValue as value. The value returned depends on the value of the
+If you are using saml:AttributeStatement to transfer metadata, like the user name, you can access all the attributes through response.attributes. It contains all the saml:AttributeStatement with its 'Name' as a indifferent key the one/more saml:AttributeValue as value. The value returned depends on the value of the
 `single_value_compatibility` (when activate, only one value returned, the first one)
 
 ```ruby
@@ -320,15 +337,22 @@ In order to be able to sign we need first to define the private key and the publ
 The settings related to sign are stored in the `security` attribute of the settings:
 
 ```ruby
-  settings.security[:authn_requests_signed]  = true     # Enable or not signature on AuthNRequest
-  settings.security[:logout_requests_signed] = true     # Enable or not signature on Logout Request
+  settings.security[:authn_requests_signed]   = true     # Enable or not signature on AuthNRequest
+  settings.security[:logout_requests_signed]  = true     # Enable or not signature on Logout Request
   settings.security[:logout_responses_signed] = true     # Enable or not signature on Logout Response
+  settings.security[:metadata_signed]         = true     # Enable or not signature on Metadata
 
   settings.security[:digest_method]    = XMLSecurity::Document::SHA1
-  settings.security[:signature_method] = XMLSecurity::Document::SHA1
+  settings.security[:signature_method] = XMLSecurity::Document::RSA_SHA1
 
-  settings.security[:embed_sign]        = false                # Embeded signature or HTTP GET parameter Signature
+  # Embeded signature or HTTP GET parameter signature
+  # Note that metadata signature is always embedded regardless of this value.
+  settings.security[:embed_sign] = false
 ```
+
+Notice that the RelayState parameter is used when creating the Signature on the HTTP-Redirect Binding,
+remember to provide it to the Signature builder if you are sending a GET RelayState parameter or
+Signature validation process will fail at the Identity Provider.
 
 
 ## Single Log Out

@@ -1,6 +1,8 @@
 require "uuid"
+require "rexml/document"
 
 require "onelogin/ruby-saml/logging"
+require "onelogin/ruby-saml/saml_message"
 
 module OneLogin
   module RubySaml
@@ -25,7 +27,10 @@ module OneLogin
       end
 
       def create_params(settings, params={})
-        params = {} if params.nil?
+        # The method expects :RelayState but sometimes we get 'RelayState' instead.
+        # Based on the HashWithIndifferentAccess value in Rails we could experience
+        # conflicts so this line will solve them.
+        relay_state = params[:RelayState] || params['RelayState']
 
         request_doc = create_authentication_xml_doc(settings)
         request_doc.context[:attribute_quote] = :quote if settings.double_quote_xml_attribute_values
@@ -40,10 +45,10 @@ module OneLogin
         request_params = {"SAMLRequest" => base64_request}
 
         if settings.security[:authn_requests_signed] && !settings.security[:embed_sign] && settings.private_key
-          params['SigAlg']    = XMLSecurity::Document::SHA1
+          params['SigAlg']    = settings.security[:signature_method]
           url_string          = "SAMLRequest=#{CGI.escape(base64_request)}"
-          url_string         += "&RelayState=#{CGI.escape(params['RelayState'])}" if params['RelayState']
-          url_string         += "&SigAlg=#{CGI.escape(params['SigAlg'])}"
+          url_string         << "&RelayState=#{CGI.escape(relay_state)}" if relay_state
+          url_string         << "&SigAlg=#{CGI.escape(params['SigAlg'])}"
           private_key         = settings.get_sp_key()
           signature           = private_key.sign(XMLSecurity::BaseDocument.new.algorithm(settings.security[:signature_method]).new, url_string)
           params['Signature'] = encode(signature)
@@ -123,7 +128,7 @@ module OneLogin
           end
         end
 
-        # embebed sign
+        # embed signature
         if settings.security[:authn_requests_signed] && settings.private_key && settings.certificate && settings.security[:embed_sign] 
           private_key = settings.get_sp_key()
           cert = settings.get_sp_cert()

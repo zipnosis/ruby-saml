@@ -2,6 +2,8 @@ require "base64"
 require "uuid"
 require "zlib"
 require "cgi"
+require "net/http"
+require "net/https"
 require "rexml/document"
 require "rexml/xpath"
 
@@ -25,7 +27,8 @@ module OneLogin
         @document = REXML::Document.new(idp_metadata)
 
         OneLogin::RubySaml::Settings.new.tap do |settings|
-
+          settings.idp_entity_id = idp_entity_id
+          settings.name_identifier_format = idp_name_id_format
           settings.idp_sso_target_url = single_signon_service_url
           settings.idp_slo_target_url = single_logout_service_url
           settings.idp_cert_fingerprint = fingerprint
@@ -47,6 +50,12 @@ module OneLogin
           # Most IdPs will probably use self signed certs
           if validate_cert
             http.verify_mode = OpenSSL::SSL::VERIFY_PEER
+
+            # Net::HTTP in Ruby 1.8 did not set the default certificate store
+            # automatically when VERIFY_PEER was specified.
+            if RUBY_VERSION < '1.9' && !http.ca_file && !http.ca_path && !http.cert_store
+              http.cert_store = OpenSSL::SSL::SSLContext::DEFAULT_CERT_STORE
+            end
           else
             http.verify_mode = OpenSSL::SSL::VERIFY_NONE
           end
@@ -55,6 +64,16 @@ module OneLogin
           meta_text = response.body
         end
         meta_text
+      end
+
+      def idp_entity_id
+        node = REXML::XPath.first(document, "/md:EntityDescriptor/@entityID", { "md" => METADATA })
+        node.value if node
+      end
+
+      def idp_name_id_format
+        node = REXML::XPath.first(document, "/md:EntityDescriptor/md:IDPSSODescriptor/md:NameIDFormat", { "md" => METADATA })
+        node.text if node
       end
 
       def single_signon_service_url

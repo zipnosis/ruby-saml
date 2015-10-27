@@ -1,5 +1,7 @@
 require File.expand_path(File.join(File.dirname(__FILE__), "test_helper"))
 
+require 'onelogin/ruby-saml/response'
+
 class RubySamlTest < Minitest::Test
 
   describe "Response" do
@@ -119,7 +121,7 @@ class RubySamlTest < Minitest::Test
         settings.idp_cert_fingerprint = signature_fingerprint_1
         response.settings = settings
         assert response.is_valid?
-        assert response.name_id == "test@onelogin.com"
+        assert_equal response.name_id, "test@onelogin.com"
       end
 
       it "support dynamic namespace resolution on signature elements" do
@@ -193,15 +195,23 @@ class RubySamlTest < Minitest::Test
         assert response.send(:validate_conditions, true)
       end
 
-      it "optionally allow for clock drift" do
+      it "optionally allows for clock drift" do
         # The NotBefore condition in the document is 2011-06-14T18:21:01.516Z
-        Time.stubs(:now).returns(Time.parse("2011-06-14T18:21:01Z"))
-        response = OneLogin::RubySaml::Response.new(response_document_5, :allowed_clock_drift => 0.515)
-        assert !response.send(:validate_conditions, true)
+        Timecop.freeze(Time.parse("2011-06-14T18:21:01Z")) do
+          response = OneLogin::RubySaml::Response.new(
+            response_document_5,
+            :allowed_clock_drift => 0.515
+          )
+          assert !response.send(:validate_conditions, true)
+        end
 
-        Time.stubs(:now).returns(Time.parse("2011-06-14T18:21:01Z"))
-        response = OneLogin::RubySaml::Response.new(response_document_5, :allowed_clock_drift => 0.516)
-        assert response.send(:validate_conditions, true)
+        Timecop.freeze(Time.parse("2011-06-14T18:21:01Z")) do
+          response = OneLogin::RubySaml::Response.new(
+            response_document_5,
+            :allowed_clock_drift => 0.516
+          )
+          assert response.send(:validate_conditions, true)
+        end
       end
     end
 
@@ -374,6 +384,29 @@ class RubySamlTest < Minitest::Test
         response = OneLogin::RubySaml::Response.new(malicious_response_document)
         response.send(:xpath_first_from_signed_assertion)
         assert_equal($evalled, nil)
+      end
+    end
+
+    describe '#sign_document' do
+      it 'Sign an unsigned SAML Response XML and initiate the SAML object with it' do
+        xml = Base64.decode64(fixture("test_sign.xml"))
+
+        document = XMLSecurity::Document.new(xml)
+
+        formated_cert = OneLogin::RubySaml::Utils.format_cert(ruby_saml_cert_text)
+        cert = OpenSSL::X509::Certificate.new(formated_cert)
+
+        formated_private_key = OneLogin::RubySaml::Utils.format_private_key(ruby_saml_key_text)
+        private_key = OpenSSL::PKey::RSA.new(formated_private_key)
+        document.sign_document(private_key, cert)
+
+        saml_response = OneLogin::RubySaml::Response.new(document.to_s)
+        settings = OneLogin::RubySaml::Settings.new
+        settings.idp_cert = ruby_saml_cert_text
+        saml_response.settings = settings
+        time = Time.parse("2015-03-18T04:50:24Z")
+        Time.stubs(:now).returns(time)
+        saml_response.validate!
       end
     end
   end
