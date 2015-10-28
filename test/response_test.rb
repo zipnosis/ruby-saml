@@ -9,11 +9,14 @@ class RubySamlTest < Minitest::Test
     let(:settings) { OneLogin::RubySaml::Settings.new }
     let(:response) { OneLogin::RubySaml::Response.new(response_document_without_recipient) }
     let(:response_without_attributes) { OneLogin::RubySaml::Response.new(response_document_without_attributes) }
+    let(:response_without_reference_uri) { OneLogin::RubySaml::Response.new(response_document_without_reference_uri) }
     let(:response_with_signed_assertion) { OneLogin::RubySaml::Response.new(response_document_with_signed_assertion) }
+    let(:response_with_ds_namespace_at_the_root) { OneLogin::RubySaml::Response.new(response_document_with_ds_namespace_at_the_root)}
     let(:response_unsigned) { OneLogin::RubySaml::Response.new(response_document_unsigned) }
     let(:response_wrapped) { OneLogin::RubySaml::Response.new(response_document_wrapped) }
     let(:response_multiple_attr_values) { OneLogin::RubySaml::Response.new(fixture(:response_with_multiple_attribute_values)) }
     let(:response_valid_signed) { OneLogin::RubySaml::Response.new(response_document_valid_signed) }
+    let(:response_valid_signed_without_x509certificate) { OneLogin::RubySaml::Response.new(response_document_valid_signed_without_x509certificate) }
     let(:response_no_id) { OneLogin::RubySaml::Response.new(read_invalid_response("no_id.xml.base64")) }
     let(:response_no_version) { OneLogin::RubySaml::Response.new(read_invalid_response("no_saml2.xml.base64")) }
     let(:response_multi_assertion) { OneLogin::RubySaml::Response.new(read_invalid_response("multiple_assertions.xml.base64")) }
@@ -55,7 +58,7 @@ class RubySamlTest < Minitest::Test
 
     describe "Prevent XEE attack" do
       before do
-        @response = OneLogin::RubySaml::Response.new(fixture(:attackxee))        
+        @response = OneLogin::RubySaml::Response.new(fixture(:attackxee))
       end
 
       it "false when evil attack vector is present, soft = true" do
@@ -384,6 +387,15 @@ class RubySamlTest < Minitest::Test
           response_no_version.is_valid?
           assert_includes response_no_version.errors, "Unsupported SAML version"
         end
+
+        it "return true when a nil URI is given in the ds:Reference" do
+
+          response_without_reference_uri.stubs(:conditions).returns(nil)
+          response_without_reference_uri.settings = settings
+          response_without_reference_uri.settings.idp_cert_fingerprint = "19:4D:97:E4:D8:C9:C8:CF:A4:B7:21:E5:EE:49:7F:D9:66:0E:52:13"
+          assert response_without_reference_uri.is_valid?
+          assert_empty response_without_reference_uri.errors
+        end
       end
     end
 
@@ -409,7 +421,7 @@ class RubySamlTest < Minitest::Test
         assert response_valid_signed.send(:validate_issuer)
 
         response_valid_signed.settings.idp_entity_id = 'https://app.onelogin.com/saml2'
-        assert response_valid_signed.send(:validate_issuer)        
+        assert response_valid_signed.send(:validate_issuer)
       end
 
       it "return false when the issuer of the Message does not match the IdP entityId" do
@@ -491,7 +503,7 @@ class RubySamlTest < Minitest::Test
         response = OneLogin::RubySaml::Response.new(response_document_valid_signed, :settings => settings, :matches_request_id => "_fc4a34b0-7efb-012e-caae-782bcb13bb38")
         assert response.send(:validate_in_response_to)
         assert_empty response.errors
-      end      
+      end
 
       it "return true when no Request ID is provided for checking" do
         response = OneLogin::RubySaml::Response.new(response_document_valid_signed, :settings => settings)
@@ -606,6 +618,27 @@ class RubySamlTest < Minitest::Test
         assert !response_invalid_subjectconfirmation_noa.send(:validate_subject_confirmation)
         assert_includes response_invalid_subjectconfirmation_noa.errors, "A valid SubjectConfirmation was not found on this Response"
       end
+
+      it "return true when the skip_subject_confirmation option is passed and the subject confirmation is valid" do
+        opts = {}
+        opts[:skip_subject_confirmation] = true
+        response_with_skip = OneLogin::RubySaml::Response.new(response_document_valid_signed, opts)
+        response_with_skip.settings = settings
+        response_with_skip.settings.assertion_consumer_service_url = 'recipient'
+        Time.expects(:now).times(0) # ensures the test isn't run and thus Time.now.utc is never called within the test
+        assert response_with_skip.send(:validate_subject_confirmation)
+        assert_empty response_with_skip.errors
+      end
+
+      it "return true when the skip_subject_confirmation option is passed and the response has an invalid subject confirmation" do
+        opts = {}
+        opts[:skip_subject_confirmation] = true
+        response_with_skip = OneLogin::RubySaml::Response.new(read_invalid_response("invalid_subjectconfirmation_noa.xml.base64"), opts)
+        response_with_skip.settings = settings
+        Time.expects(:now).times(0) # ensures the test isn't run and thus Time.now.utc is never called within the test
+        assert response_with_skip.send(:validate_subject_confirmation)
+        assert_empty response_with_skip.errors
+      end
     end
 
     describe "#validate_session_expiration" do
@@ -620,6 +653,18 @@ class RubySamlTest < Minitest::Test
         assert !response.send(:validate_session_expiration)
         assert_includes response.errors, "The attributes have expired, based on the SessionNotOnOrAfter of the AttributeStatement of this Response"
       end
+      
+      it "returns true when the session has expired, but is still within the allowed_clock_drift" do
+        drift = (Time.now - Time.parse("2010-11-19T21:57:37Z")) * 60 # seconds ago that this assertion expired
+        drift += 10 # add a buffer of 10 seconds to make sure the test passes
+        opts = {}
+        opts[:allowed_clock_drift] = drift
+
+        response_with_drift = OneLogin::RubySaml::Response.new(response_document_without_recipient, opts)
+        response_with_drift.settings = settings
+        assert response_with_drift.send(:validate_session_expiration)
+        assert_empty response_with_drift.errors
+      end
     end
 
     describe "#validate_signature" do
@@ -628,6 +673,13 @@ class RubySamlTest < Minitest::Test
         response_valid_signed.settings = settings
         assert response_valid_signed.send(:validate_signature)
         assert_empty response_valid_signed.errors
+      end
+
+      it "return true when the signature is valid and ds namespace is at the root" do
+        settings.idp_cert_fingerprint = '5614657ab692b960480389723a36446a5fe1f7ec'
+        response_with_ds_namespace_at_the_root.settings = settings
+        assert response_with_ds_namespace_at_the_root.send(:validate_signature)
+        assert_empty response_with_ds_namespace_at_the_root.errors
       end
 
       it "return false when no fingerprint" do
@@ -643,6 +695,30 @@ class RubySamlTest < Minitest::Test
         response.settings = settings
         assert !response.send(:validate_signature)
         assert_includes response.errors, "Invalid Signature on SAML Response"
+      end
+
+      it "return false when no X509Certificate and not cert provided at settings" do
+        settings.idp_cert_fingerprint = ruby_saml_cert_fingerprint
+        settings.idp_cert = nil
+        response_valid_signed_without_x509certificate.settings = settings
+        assert !response_valid_signed_without_x509certificate.send(:validate_signature)
+        assert_includes response_valid_signed_without_x509certificate.errors, "Invalid Signature on SAML Response"
+      end
+
+      it "return false when no X509Certificate and the cert provided at settings mismatches" do
+        settings.idp_cert_fingerprint = nil
+        settings.idp_cert = signature_1
+        response_valid_signed_without_x509certificate.settings = settings
+        assert !response_valid_signed_without_x509certificate.send(:validate_signature)
+        assert_includes response_valid_signed_without_x509certificate.errors, "Invalid Signature on SAML Response"        
+      end
+
+      it "return true when no X509Certificate and the cert provided at settings matches" do
+        settings.idp_cert_fingerprint = nil
+        settings.idp_cert = ruby_saml_cert_text
+        response_valid_signed_without_x509certificate.settings = settings
+        assert response_valid_signed_without_x509certificate.send(:validate_signature)
+        assert_empty response_valid_signed_without_x509certificate.errors
       end
     end
 
@@ -888,7 +964,7 @@ class RubySamlTest < Minitest::Test
       it 'is not possible when encryptID inside the assertion but no private key' do
           response_encrypted_nameid.settings = settings
           assert_raises(OneLogin::RubySaml::ValidationError, "An EncryptedID found and no SP private key found on the settings to decrypt it") do
-            assert_equal "test@onelogin.com", response_encrypted_nameid.nameid    
+            assert_equal "test@onelogin.com", response_encrypted_nameid.nameid
           end
       end
 
@@ -1007,7 +1083,7 @@ class RubySamlTest < Minitest::Test
     describe "check right settings" do
 
       it "is not possible to decrypt the assertion if no private key" do
-        response = OneLogin::RubySaml::Response.new(signed_message_encrypted_unsigned_assertion, :settings => settings)        
+        response = OneLogin::RubySaml::Response.new(signed_message_encrypted_unsigned_assertion, :settings => settings)
 
         encrypted_assertion_node = REXML::XPath.first(
           response.document,
@@ -1023,7 +1099,7 @@ class RubySamlTest < Minitest::Test
       end
 
       it "is possible to decrypt the assertion if private key" do
-        response = OneLogin::RubySaml::Response.new(signed_message_encrypted_unsigned_assertion, :settings => settings)        
+        response = OneLogin::RubySaml::Response.new(signed_message_encrypted_unsigned_assertion, :settings => settings)
 
         encrypted_assertion_node = REXML::XPath.first(
           response.document,
@@ -1089,6 +1165,28 @@ class RubySamlTest < Minitest::Test
         assert_equal "test", response.attributes[:uid]
         assert_equal "_ce3d2948b4cf20146dee0a0b3dd6f69b6cf86f62d7", response.nameid
       end
+    end
+
+  end
+  describe "test qualified name id in attributes" do
+
+    it "parsed the nameid" do
+     response = OneLogin::RubySaml::Response.new(read_response("signed_nameid_in_atts.xml"), :settings => settings)
+     response.settings.idp_cert_fingerprint = 'c51985d947f1be57082025050846eb27f6cab783'
+     assert_empty response.errors
+     assert_equal "test", response.attributes[:uid]
+     assert_equal "http://idp.example.com/metadata.php/ZdrjpwEdw22vKoxWAbZB78/gQ7s=", response.attributes.single('urn:oid:1.3.6.1.4.1.5923.1.1.1.10')
+    end
+  end
+
+  describe "test unqualified name id in attributes" do
+
+    it "parsed the nameid" do
+     response = OneLogin::RubySaml::Response.new(read_response("signed_unqual_nameid_in_atts.xml"), :settings => settings)
+     response.settings.idp_cert_fingerprint = 'c51985d947f1be57082025050846eb27f6cab783'
+     assert_empty response.errors
+     assert_equal "test", response.attributes[:uid]
+     assert_equal "ZdrjpwEdw22vKoxWAbZB78/gQ7s=", response.attributes.single('urn:oid:1.3.6.1.4.1.5923.1.1.1.10')
     end
   end
 end

@@ -1,6 +1,5 @@
 require File.expand_path(File.join(File.dirname(__FILE__), "test_helper"))
 require 'xml_security'
-require 'timecop'
 
 class XmlSecurityTest < Minitest::Test
   include XMLSecurity
@@ -69,13 +68,20 @@ class XmlSecurityTest < Minitest::Test
       assert adfs_document.validate_signature(base64cert, false)
     end
 
-    it "raise validation error when the X509Certificate is missing" do
+    it "raise validation error when the X509Certificate is missing and no cert provided" do
       decoded_response.sub!(/<ds:X509Certificate>.*<\/ds:X509Certificate>/, "")
       mod_document = XMLSecurity::SignedDocument.new(decoded_response)
       exception = assert_raises(OneLogin::RubySaml::ValidationError) do
         mod_document.validate_document("a fingerprint", false) # The fingerprint isn't relevant to this test
       end
-      assert_equal("Certificate element missing in response (ds:X509Certificate)", exception.message)
+      assert_equal("Certificate element missing in response (ds:X509Certificate) and not cert provided at settings", exception.message)
+    end
+
+    it "invalidaties when the X509Certificate is missing and the cert is provided but mismatches" do
+      decoded_response.sub!(/<ds:X509Certificate>.*<\/ds:X509Certificate>/, "")
+      mod_document = XMLSecurity::SignedDocument.new(decoded_response)
+      cert = OpenSSL::X509::Certificate.new(ruby_saml_cert)
+      assert !mod_document.validate_document("a fingerprint", true, :cert => cert) # The fingerprint isn't relevant to this test
     end
   end
 
@@ -215,14 +221,14 @@ class XmlSecurityTest < Minitest::Test
         assert response.is_valid?
       end
 
-      it "return an empty list when inclusive namespace element is missing" do
+      it "return nil when inclusive namespace element is missing" do
         response = fixture(:no_signature_ns, false)
         response.slice! %r{<InclusiveNamespaces xmlns="http://www.w3.org/2001/10/xml-exc-c14n#" PrefixList="#default saml ds xs xsi"/>}
 
         document = XMLSecurity::SignedDocument.new(response)
         inclusive_namespaces = document.send(:extract_inclusive_namespaces)
 
-        assert inclusive_namespaces.empty?
+        assert inclusive_namespaces.nil?
       end
     end
 

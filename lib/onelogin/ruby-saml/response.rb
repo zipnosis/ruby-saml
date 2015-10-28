@@ -36,7 +36,8 @@ module OneLogin
       # @param options  [Hash]   :settings to provide the OneLogin::RubySaml::Settings object
       #                          Or some options for the response validation process like skip the conditions validation
       #                          with the :skip_conditions, or allow a clock_drift when checking dates with :allowed_clock_drift
-      #                          or :matches_request_id that will validate that the response matches the ID of the request.
+      #                          or :matches_request_id that will validate that the response matches the ID of the request,
+      #                          or skip the subject confirmation validation with the :skip_subject_confirmation option
       def initialize(response, options = {})
         @errors = []
 
@@ -94,6 +95,7 @@ module OneLogin
 
       alias_method :nameid, :name_id
 
+
       # Gets the SessionIndex from the AuthnStatement.
       # Could be used to be stored in the local session in order
       # to be used in a future Logout Request that the SP could
@@ -131,12 +133,22 @@ module OneLogin
           stmt_element.elements.each do |attr_element|
             name  = attr_element.attributes["Name"]
             values = attr_element.elements.collect{|e|
-              # SAMLCore requires that nil AttributeValues MUST contain xsi:nil XML attribute set to "true" or "1"
-              # otherwise the value is to be regarded as empty.
-              ["true", "1"].include?(e.attributes['xsi:nil']) ? nil : e.text.to_s
+              if (e.elements.nil? || e.elements.size == 0)
+                # SAMLCore requires that nil AttributeValues MUST contain xsi:nil XML attribute set to "true" or "1"
+                # otherwise the value is to be regarded as empty.
+                ["true", "1"].include?(e.attributes['xsi:nil']) ? nil : e.text.to_s
+              # explicitly support saml2:NameID with saml2:NameQualifier if supplied in attributes
+              # this is useful for allowing eduPersonTargetedId to be passed as an opaque identifier to use to 
+              # identify the subject in an SP rather than email or other less opaque attributes
+              # NameQualifier, if present is prefixed with a "/" to the value
+              else 
+               REXML::XPath.match(e,'a:NameID', { "a" => ASSERTION }).collect{|n|
+                  (n.attributes['NameQualifier'] ? n.attributes['NameQualifier'] +"/" : '') + n.text.to_s
+                }
+              end
             }
 
-            attributes.add(name, values)
+            attributes.add(name, values.flatten)
           end
 
           attributes
@@ -316,11 +328,9 @@ module OneLogin
 
       # Validates that the SAML Response provided in the initialization is not empty,
       # also check that the setting and the IdP cert were also provided
-      # @param soft [Boolean] soft Enable or Disable the soft mode (In order to raise exceptions when the response is invalid or not)
-      # @return [Boolean] True if the required info is found, otherwise False if soft=True
-      # @raise [ValidationError] if soft == false and validation fails
+      # @return [Boolean] True if the required info is found, false otherwise
       #
-      def validate_response_state(soft = true)
+      def validate_response_state
         return append_error("Blank response") if response.nil? || response.empty?
 
         return append_error("No settings on response") if settings.nil?
@@ -504,7 +514,7 @@ module OneLogin
         return true if session_expires_at.nil?
 
         now = Time.now.utc
-        unless session_expires_at > (now + allowed_clock_drift)
+        unless (session_expires_at + allowed_clock_drift) > now
           error_msg = "The attributes have expired, based on the SessionNotOnOrAfter of the AttributeStatement of this Response"
           return append_error(error_msg)
         end
@@ -513,12 +523,14 @@ module OneLogin
       end
 
       # Validates if exists valid SubjectConfirmation (If the response was initialized with the :allowed_clock_drift option,
-      # timimg validation are relaxed by the allowed_clock_drift value)
+      # timimg validation are relaxed by the allowed_clock_drift value. If the response was initialized with the 
+      # :skip_subject_confirmation option, this validation is skipped)
       # If fails, the error is added to the errors array
       # @return [Boolean] True if exists a valid SubjectConfirmation, otherwise False if soft=True
       # @raise [ValidationError] if soft == false and validation fails
       #
       def validate_subject_confirmation
+        return true if options[:skip_subject_confirmation]
         valid_subject_confirmation = false
 
         subject_confirmation_nodes = xpath_from_signed_assertion('/a:Subject/a:SubjectConfirmation')
@@ -561,6 +573,7 @@ module OneLogin
       def validate_signature
         return true if settings.do_not_verify_cert
         fingerprint = settings.get_fingerprint
+        idp_cert = settings.get_idp_cert
 
         # If the response contains the signature, and the assertion was encrypted, validate the original SAML Response
         # otherwise, review if the decrypted assertion contains a signature
@@ -572,7 +585,11 @@ module OneLogin
         )
         doc = (response_signed || decrypted_document.nil?) ? document : decrypted_document
 
-        unless fingerprint && doc.validate_document(fingerprint, :fingerprint_alg => settings.idp_cert_fingerprint_algorithm)
+        opts = {}
+        opts[:fingerprint_alg] = settings.idp_cert_fingerprint_algorithm
+        opts[:cert] = idp_cert
+
+        unless fingerprint && doc.validate_document(fingerprint, @soft, opts)
           error_msg = "Invalid Signature on SAML Response"
           return append_error(error_msg)
         end
@@ -677,7 +694,7 @@ module OneLogin
       # @return [REXML::Document] The decrypted EncryptedAssertion element
       #
       def decrypt_assertion(encrypted_assertion_node)
-        decrypt_element(encrypted_assertion_node, /(.*<\/(saml2*:|)Assertion>)/m)
+        decrypt_element(encrypted_assertion_node, /(.*<\/(\w+:)?Assertion>)/m)
       end
 
       # Decrypts an EncryptedID element
@@ -685,7 +702,7 @@ module OneLogin
       # @return [REXML::Document] The decrypted EncrypedtID element
       #
       def decrypt_nameid(encryptedid_node)
-        decrypt_element(encryptedid_node, /(.*<\/(saml2*:|)NameID>)/m)
+        decrypt_element(encryptedid_node, /(.*<\/(\w+:)?NameID>)/m)
       end
 
       # Decrypt an element

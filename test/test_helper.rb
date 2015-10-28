@@ -52,6 +52,10 @@ class Minitest::Test
     @response_document_valid_signed ||= read_response("valid_response.xml.base64")
   end
 
+  def response_document_valid_signed_without_x509certificate
+    @response_document_valid_signed_without_x509certificate ||= read_response("valid_response_without_x509certificate.xml.base64")
+  end
+
   def response_document_without_recipient
     @response_document_without_recipient ||= read_response("response_with_undefined_recipient.xml.base64")
   end
@@ -67,12 +71,20 @@ class Minitest::Test
     @response_document_without_attributes ||= read_response("response_without_attributes.xml.base64")
   end
 
+  def response_document_without_reference_uri
+    @response_document_without_reference_uri ||= read_response("response_without_reference_uri.xml.base64")
+  end
+
   def response_document_with_signed_assertion
     @response_document_with_signed_assertion ||= read_response("response_with_signed_assertion.xml.base64")
   end
 
   def response_document_with_signed_assertion_2
     @response_document_with_signed_assertion_2 ||= read_response("response_with_signed_assertion_2.xml.base64")
+  end
+
+  def response_document_with_ds_namespace_at_the_root
+    @response_document_with_ds_namespace_at_the_root ||= read_response("response_with_ds_namespace_at_the_root.xml.base64")
   end
 
   def response_document_unsigned

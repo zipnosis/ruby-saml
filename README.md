@@ -1,13 +1,17 @@
-# Ruby SAML [![Build Status](https://secure.travis-ci.org/onelogin/ruby-saml.png)](http://travis-ci.org/onelogin/ruby-saml)
+# Ruby SAML [![Build Status](https://secure.travis-ci.org/onelogin/ruby-saml.png)](http://travis-ci.org/onelogin/ruby-saml) [![Coverage Status](https://coveralls.io/repos/onelogin/ruby-saml/badge.svg?branch=master%0A)](https://coveralls.io/r/onelogin/ruby-saml?branch=master%0A) [![Gem Version](https://badge.fury.io/rb/ruby-saml.svg)](http://badge.fury.io/rb/ruby-saml)
 
+
+## Updating from 1.0.x to 1.1.X
+
+Version `1.1` adds some improvements on signature validation and solves some namespace conflicts.
+
+For more details, please review [the changelog](changelog.md).
 
 ## Updating from 0.9.x to 1.0.X
 
 Version `1.0` is a recommended update for all Ruby SAML users as it includes security fixes.
 
 Version `1.0` adds security improvements like entity expansion limitation, more SAML message validations, and other important improvements like decrypt support.
-
-For more details, please review [the changelog](changelog.md).
 
 ### Important Changes
 Please note the `get_idp_metadata` method raises an exception when it is not able to fetch the idp metadata, so review your integration if you are using this functionality.
@@ -31,6 +35,8 @@ We created a demo project for Rails4 that uses the latest version of this librar
 * 1.9.x
 * 2.1.x
 * 2.2.x
+* JRuby 1.7.19
+* JRuby 9.0.0.0
 
 ## Adding Features, Pull Requests
 * Fork the repository
@@ -162,6 +168,13 @@ def saml_settings
 
   settings
 end
+```
+
+Some assertion validations can be skipped by passing parameters to OneLogin::RubySaml::Response.new().  For example, you can skip the Conditions validation or the SubjectConfirmation validations by initializing the response with different options:
+
+```ruby
+response = OneLogin::RubySaml::Response.new(params[:SAMLResponse], {skip_conditions: true}) # skips conditions
+response = OneLogin::RubySaml::Response.new(params[:SAMLResponse], {skip_subject_confirmation: true}) # skips subject confirmation
 ```
 
 What's left at this point, is to wrap it all up in a controller and point the initialization and consumption URLs in OneLogin at that. A full controller example could look like this:
@@ -394,6 +407,7 @@ Service Provider.
 
 Notice that this toolkit uses 'settings.certificate' and 'settings.private_key' for the sign and the decrypt process.
 
+Enable/disable the soft mode by the settings.soft parameter. When is set false, the saml validations errors will raise an exception.
 
 ## Decrypting
 
