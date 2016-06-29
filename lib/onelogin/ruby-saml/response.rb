@@ -11,6 +11,8 @@ module OneLogin
     # SAML2 Authentication Response. SAML Response
     #
     class Response < SamlMessage
+      include ErrorHandling
+
       ASSERTION = "urn:oasis:names:tc:SAML:2.0:assertion"
       PROTOCOL  = "urn:oasis:names:tc:SAML:2.0:protocol"
       DSIG      = "http://www.w3.org/2000/09/xmldsig#"
@@ -20,9 +22,6 @@ module OneLogin
 
       # OneLogin::RubySaml::Settings Toolkit settings
       attr_accessor :settings
-
-      # Array with the causes [Array of strings]
-      attr_accessor :errors
 
       attr_reader :document
       attr_reader :decrypted_document
@@ -39,16 +38,16 @@ module OneLogin
       #                          or :matches_request_id that will validate that the response matches the ID of the request,
       #                          or skip the subject confirmation validation with the :skip_subject_confirmation option
       def initialize(response, options = {})
-        @errors = []
-
         raise ArgumentError.new("Response cannot be nil") if response.nil?
-        @options = options
 
+        @errors = []
+        @options = options
         @soft = true
-        if !options.empty? && !options[:settings].nil?
+        unless options[:settings].nil?
           @settings = options[:settings]
-          if !options[:settings].soft.nil?
-            @soft = options[:settings].soft
+
+          unless @settings.soft.nil?
+            @soft = @settings.soft
           end
         end
 
@@ -60,40 +59,35 @@ module OneLogin
         end
       end
 
-      # Append the cause to the errors array, and based on the value of soft, return false or raise
-      # an exception
-      def append_error(error_msg)
-        @errors << error_msg
-        return soft ? false : validation_error(error_msg)
-      end
-
-      # Reset the errors array
-      def reset_errors!
-        @errors = []
-      end
-
       # Validates the SAML Response with the default values (soft = true)
+      # @param collect_errors [Boolean] Stop validation when first error appears or keep validating. (if soft=true)
       # @return [Boolean] TRUE if the SAML Response is valid
       #
-      def is_valid?
-        validate
+      def is_valid?(collect_errors = false)
+        validate(collect_errors)
       end
 
       # @return [String] the NameID provided by the SAML response from the IdP.
       #
       def name_id
-        @name_id ||= begin
-          encrypted_node = xpath_first_from_signed_assertion('/a:Subject/a:EncryptedID')
-          if encrypted_node
-            node = decrypt_nameid(encrypted_node)
-          else
-            node = xpath_first_from_signed_assertion('/a:Subject/a:NameID')
+        @name_id ||=
+          if name_id_node
+            name_id_node.text
           end
-          node.nil? ? nil : node.text
-        end
       end
 
       alias_method :nameid, :name_id
+
+      # @return [String] the NameID Format provided by the SAML response from the IdP.
+      #
+      def name_id_format
+        @name_id_format ||=
+          if name_id_node && name_id_node.attribute("Format")
+            name_id_node.attribute("Format").value
+          end
+      end
+
+      alias_method :nameid_format, :name_id_format
 
 
       # Gets the SessionIndex from the AuthnStatement.
@@ -138,10 +132,10 @@ module OneLogin
                 # otherwise the value is to be regarded as empty.
                 ["true", "1"].include?(e.attributes['xsi:nil']) ? nil : e.text.to_s
               # explicitly support saml2:NameID with saml2:NameQualifier if supplied in attributes
-              # this is useful for allowing eduPersonTargetedId to be passed as an opaque identifier to use to 
+              # this is useful for allowing eduPersonTargetedId to be passed as an opaque identifier to use to
               # identify the subject in an SP rather than email or other less opaque attributes
               # NameQualifier, if present is prefixed with a "/" to the value
-              else 
+              else
                REXML::XPath.match(e,'a:NameID', { "a" => ASSERTION }).collect{|n|
                   (n.attributes['NameQualifier'] ? n.attributes['NameQualifier'] +"/" : '') + n.text.to_s
                 }
@@ -180,7 +174,7 @@ module OneLogin
           node = REXML::XPath.first(
             document,
             "/p:Response/p:Status/p:StatusCode",
-            { "p" => PROTOCOL, "a" => ASSERTION }
+            { "p" => PROTOCOL }
           )
           node.attributes["Value"] if node && node.attributes
         end
@@ -193,7 +187,7 @@ module OneLogin
           node = REXML::XPath.first(
             document,
             "/p:Response/p:Status/p:StatusMessage",
-            { "p" => PROTOCOL, "a" => ASSERTION }
+            { "p" => PROTOCOL }
           )
           node.text if node
         end
@@ -254,6 +248,19 @@ module OneLogin
         end
       end
 
+      # @return [String|nil] Destination attribute from the SAML Response.
+      #
+      def destination
+        @destination ||= begin
+          node = REXML::XPath.first(
+            document,
+            "/p:Response",
+            { "p" => PROTOCOL }
+          )
+          node.nil? ? nil : node.attributes['Destination']
+        end
+      end
+
       # @return [Array] The Audience elements from the Contitions of the SAML Response.
       #
       def audiences
@@ -278,27 +285,39 @@ module OneLogin
       private
 
       # Validates the SAML Response (calls several validation methods)
+      # @param collect_errors [Boolean] Stop validation when first error appears or keep validating. (if soft=true)
       # @return [Boolean] True if the SAML Response is valid, otherwise False if soft=True
       # @raise [ValidationError] if soft == false and validation fails
       #
-      def validate
+      def validate(collect_errors = false)
         reset_errors!
+        return false unless validate_response_state
 
-        validate_response_state &&
-        validate_version &&
-        validate_id &&
-        validate_success_status &&
-        validate_num_assertion &&
-        validate_no_encrypted_attributes &&
-        validate_signed_elements &&
-        validate_structure &&
-        validate_in_response_to &&
-        validate_conditions &&
-        validate_audience &&
-        validate_issuer &&
-        validate_session_expiration &&
-        validate_subject_confirmation &&
-        validate_signature
+        validations = [
+          :validate_response_state,
+          :validate_version,
+          :validate_id,
+          :validate_success_status,
+          :validate_num_assertion,
+          :validate_no_encrypted_attributes,
+          :validate_signed_elements,
+          :validate_structure,
+          :validate_in_response_to,
+          :validate_conditions,
+          :validate_audience,
+          :validate_destination,
+          :validate_issuer,
+          :validate_session_expiration,
+          :validate_subject_confirmation,
+          :validate_signature
+        ]
+
+        if collect_errors
+          validations.each { |validation| send(validation) }
+          @errors.empty?
+        else
+          validations.all? { |validation| send(validation) }
+        end
       end
 
 
@@ -319,8 +338,15 @@ module OneLogin
       # @raise [ValidationError] if soft == false and validation fails
       #
       def validate_structure
+        structure_error_msg = "Invalid SAML Response. Not match the saml-schema-protocol-2.0.xsd"
         unless valid_saml?(document, soft)
-          return append_error("Invalid SAML Response. Not match the saml-schema-protocol-2.0.xsd")
+          return append_error(structure_error_msg)
+        end
+
+        unless decrypted_document.nil?
+          unless valid_saml?(decrypted_document, soft)
+            return append_error(structure_error_msg)
+          end
         end
 
         true
@@ -416,16 +442,52 @@ module OneLogin
           {"ds"=>DSIG}
         )
         signed_elements = []
+        verified_seis = []
+        verified_ids = []
         signature_nodes.each do |signature_node|
           signed_element = signature_node.parent.name
           if signed_element != 'Response' && signed_element != 'Assertion'
-            return append_error("Found an unexpected Signature Element. SAML Response rejected")
+            return append_error("Invalid Signature Element '#{signed_element}'. SAML Response rejected")
           end
+
+          if signature_node.parent.attributes['ID'].nil?
+            return append_error("Signed Element must contain an ID. SAML Response rejected")
+          end
+
+          id = signature_node.parent.attributes.get_attribute("ID").value
+          if verified_ids.include?(id)
+            return append_error("Duplicated ID. SAML Response rejected")
+          end
+          verified_ids.push(id)
+
+          # Check that reference URI matches the parent ID and no duplicate References or IDs
+          ref = REXML::XPath.first(signature_node, ".//ds:Reference", {"ds"=>DSIG})
+          if ref
+            uri = ref.attributes.get_attribute("URI")
+            if uri && !uri.value.empty?
+              sei = uri.value[1..-1]
+
+              unless sei == id
+                return append_error("Found an invalid Signed Element. SAML Response rejected")
+              end
+
+              if verified_seis.include?(sei)
+                return append_error("Duplicated Reference URI. SAML Response rejected")
+              end
+
+              verified_seis.push(sei)
+            end
+          end
+
           signed_elements << signed_element
         end
 
         unless signature_nodes.length < 3 && !signed_elements.empty?
           return append_error("Found an unexpected number of Signature Element. SAML Response rejected")
+        end
+
+        if settings.security[:want_assertions_signed] && !(signed_elements.include? "Assertion")
+          return append_error("The Assertion of the Response is not signed and the SP requires it")
         end
 
         true
@@ -454,7 +516,22 @@ module OneLogin
         return true if audiences.empty? || settings.issuer.nil? || settings.issuer.empty?
 
         unless audiences.include? settings.issuer
-          error_msg = "#{settings.issuer} is not a valid audience for this Response"
+          error_msg = "#{settings.issuer} is not a valid audience for this Response - Valid audiences: #{audiences.join(',')}"
+          return append_error(error_msg)
+        end
+
+        true
+      end
+
+      # Validates the Destination, (If the SAML Response is received where expected)
+      # If fails, the error is added to the errors array
+      # @return [Boolean] True if there is a Destination element that matches the Consumer Service URL, otherwise False
+      #
+      def validate_destination
+        return true if destination.nil? || destination.empty? || settings.assertion_consumer_service_url.nil? || settings.assertion_consumer_service_url.empty?
+
+        unless destination == settings.assertion_consumer_service_url
+          error_msg = "The response was received at #{destination} instead of #{settings.assertion_consumer_service_url}"
           return append_error(error_msg)
         end
 
@@ -523,7 +600,7 @@ module OneLogin
       end
 
       # Validates if exists valid SubjectConfirmation (If the response was initialized with the :allowed_clock_drift option,
-      # timimg validation are relaxed by the allowed_clock_drift value. If the response was initialized with the 
+      # timimg validation are relaxed by the allowed_clock_drift value. If the response was initialized with the
       # :skip_subject_confirmation option, this validation is skipped)
       # If fails, the error is added to the errors array
       # @return [Boolean] True if exists a valid SubjectConfirmation, otherwise False if soft=True
@@ -572,29 +649,57 @@ module OneLogin
       #
       def validate_signature
         return true if settings.do_not_verify_cert
-        fingerprint = settings.get_fingerprint
-        idp_cert = settings.get_idp_cert
+
+        error_msg = "Invalid Signature on SAML Response"
 
         # If the response contains the signature, and the assertion was encrypted, validate the original SAML Response
         # otherwise, review if the decrypted assertion contains a signature
-        response_signed = REXML::XPath.first(
+        sig_elements = REXML::XPath.match(
           document,
-          "/p:Response[@ID=$id]",
+          "/p:Response[@ID=$id]/ds:Signature]",
           { "p" => PROTOCOL, "ds" => DSIG },
           { 'id' => document.signed_element_id }
         )
-        doc = (response_signed || decrypted_document.nil?) ? document : decrypted_document
+
+        use_original = sig_elements.size == 1 || decrypted_document.nil?
+        doc = use_original ? document : decrypted_document
+
+        # Check signature nodes
+        if sig_elements.nil? || sig_elements.size == 0
+          sig_elements = REXML::XPath.match(
+            doc,
+            "/p:Response/a:Assertion[@ID=$id]/ds:Signature",
+            {"p" => PROTOCOL, "a" => ASSERTION, "ds"=>DSIG},
+            { 'id' => doc.signed_element_id }
+          )
+        end
+
+        if sig_elements.size != 1
+          return append_error(error_msg)
+        end
 
         opts = {}
         opts[:fingerprint_alg] = settings.idp_cert_fingerprint_algorithm
-        opts[:cert] = idp_cert
+        opts[:cert] = settings.get_idp_cert
+        fingerprint = settings.get_fingerprint
 
         unless fingerprint && doc.validate_document(fingerprint, @soft, opts)
-          error_msg = "Invalid Signature on SAML Response"
           return append_error(error_msg)
         end
 
         true
+      end
+
+      def name_id_node
+        @name_id_node ||=
+          begin
+            encrypted_node = xpath_first_from_signed_assertion('/a:Subject/a:EncryptedID')
+            if encrypted_node
+              node = decrypt_nameid(encrypted_node)
+            else
+              node = xpath_first_from_signed_assertion('/a:Subject/a:NameID')
+            end
+          end
       end
 
       # Extracts the first appearance that matchs the subelt (pattern)
@@ -645,7 +750,7 @@ module OneLogin
       #
       def generate_decrypted_document
         if settings.nil? || !settings.get_sp_key
-          validation_error('An EncryptedAssertion found and no SP private key found on the settings to decrypt it. Be sure you provided the :settings parameter at the initialize method')
+          raise ValidationError.new('An EncryptedAssertion found and no SP private key found on the settings to decrypt it. Be sure you provided the :settings parameter at the initialize method')
         end
 
         # Marshal at Ruby 1.8.7 throw an Exception
@@ -711,7 +816,7 @@ module OneLogin
       #
       def decrypt_element(encrypt_node, rgrex)
         if settings.nil? || !settings.get_sp_key
-          return validation_error('An ' + encrypt_node.name + ' found and no SP private key found on the settings to decrypt it')
+          raise ValidationError.new('An ' + encrypt_node.name + ' found and no SP private key found on the settings to decrypt it')
         end
 
         elem_plaintext = OneLogin::RubySaml::Utils.decrypt_data(encrypt_node, settings.get_sp_key)

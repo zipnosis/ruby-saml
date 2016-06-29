@@ -28,6 +28,7 @@ module OneLogin
       attr_accessor :idp_cert
       attr_accessor :idp_cert_fingerprint
       attr_accessor :idp_cert_fingerprint_algorithm
+      attr_accessor :idp_attribute_names
       # SP Data
       attr_accessor :issuer
       attr_accessor :assertion_consumer_service_url
@@ -120,8 +121,8 @@ module OneLogin
       def get_idp_cert
         return nil if idp_cert.nil? || idp_cert.empty?
 
-        formated_cert = OneLogin::RubySaml::Utils.format_cert(idp_cert)
-        OpenSSL::X509::Certificate.new(formated_cert)
+        formatted_cert = OneLogin::RubySaml::Utils.format_cert(idp_cert)
+        OpenSSL::X509::Certificate.new(formatted_cert)
       end
 
       # @return [OpenSSL::X509::Certificate|nil] Build the SP certificate from the settings (previously format it)
@@ -129,8 +130,8 @@ module OneLogin
       def get_sp_cert
         return nil if certificate.nil? || certificate.empty?
 
-        formated_cert = OneLogin::RubySaml::Utils.format_cert(certificate)
-        OpenSSL::X509::Certificate.new(formated_cert)
+        formatted_cert = OneLogin::RubySaml::Utils.format_cert(certificate)
+        OpenSSL::X509::Certificate.new(formatted_cert)
       end
 
       # @return [OpenSSL::PKey::RSA] Build the SP private from the settings (previously format it)
@@ -155,6 +156,7 @@ module OneLogin
           :authn_requests_signed    => false,
           :logout_requests_signed   => false,
           :logout_responses_signed  => false,
+          :want_assertions_signed   => false,
           :metadata_signed          => false,
           :embed_sign               => false,
           :digest_method            => XMLSecurity::Document::SHA1,

@@ -1,5 +1,4 @@
 require "base64"
-require "uuid"
 require "zlib"
 require "cgi"
 require "net/http"
@@ -16,8 +15,10 @@ module OneLogin
     #
     class IdpMetadataParser
 
-      METADATA = "urn:oasis:names:tc:SAML:2.0:metadata"
-      DSIG     = "http://www.w3.org/2000/09/xmldsig#"
+      METADATA       = "urn:oasis:names:tc:SAML:2.0:metadata"
+      DSIG           = "http://www.w3.org/2000/09/xmldsig#"
+      NAME_FORMAT    = "urn:oasis:names:tc:SAML:2.0:attrname-format:*"
+      SAML_ASSERTION = "urn:oasis:names:tc:SAML:2.0:assertion"
 
       attr_reader :document
       attr_reader :response
@@ -26,25 +27,30 @@ module OneLogin
       # IdP values
       #
       # @param (see IdpMetadataParser#get_idp_metadata)
+      # @param options  [Hash]   :settings to provide the OneLogin::RubySaml::Settings object
       # @return (see IdpMetadataParser#get_idp_metadata)
       # @raise (see IdpMetadataParser#get_idp_metadata)
-      def parse_remote(url, validate_cert = true)
+      def parse_remote(url, validate_cert = true, options = {})
         idp_metadata = get_idp_metadata(url, validate_cert)
-        parse(idp_metadata)
+        parse(idp_metadata, options)
       end
 
       # Parse the Identity Provider metadata and update the settings with the IdP values
       # @param idp_metadata [String] 
+      # @param options  [Hash]   :settings to provide the OneLogin::RubySaml::Settings object
       #
-      def parse(idp_metadata)
+      def parse(idp_metadata, options = {})
         @document = REXML::Document.new(idp_metadata)
 
-        OneLogin::RubySaml::Settings.new.tap do |settings|
+        (options[:settings] || OneLogin::RubySaml::Settings.new).tap do |settings|
           settings.idp_entity_id = idp_entity_id
           settings.name_identifier_format = idp_name_id_format
-          settings.idp_sso_target_url = single_signon_service_url
-          settings.idp_slo_target_url = single_logout_service_url
-          settings.idp_cert_fingerprint = fingerprint
+          settings.idp_sso_target_url = single_signon_service_url(options)
+          settings.idp_slo_target_url = single_logout_service_url(options)
+          settings.idp_cert = certificate_base64
+          settings.idp_cert_fingerprint = fingerprint(settings.idp_cert_fingerprint_algorithm)
+          settings.idp_attribute_names = attribute_names
+          settings.idp_cert_fingerprint = fingerprint(settings.idp_cert_fingerprint_algorithm)
         end
       end
 
@@ -111,50 +117,118 @@ module OneLogin
         node.text if node
       end
 
+      # @param binding_priority [Array]
+      # @return [String|nil] SingleSignOnService binding if exists
+      #
+      def single_signon_service_binding(binding_priority = nil)
+        nodes = REXML::XPath.match(
+          document,
+          "/md:EntityDescriptor/md:IDPSSODescriptor/md:SingleSignOnService/@Binding",
+          { "md" => METADATA }
+        )
+        if binding_priority
+          values = nodes.map(&:value)
+          binding_priority.detect{ |binding| values.include? binding }
+        else
+          nodes.first.value if nodes.any?
+        end
+      end
+
+      # @param options [Hash]
       # @return [String|nil] SingleSignOnService endpoint if exists
       #
-      def single_signon_service_url
+      def single_signon_service_url(options = {})
+        binding = options[:sso_binding] || "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect"
         node = REXML::XPath.first(
           document,
-          "/md:EntityDescriptor/md:IDPSSODescriptor/md:SingleSignOnService/@Location",
+          "/md:EntityDescriptor/md:IDPSSODescriptor/md:SingleSignOnService[@Binding=\"#{binding}\"]/@Location",
           { "md" => METADATA }
         )
         node.value if node
       end
 
+      # @param binding_priority [Array]
+      # @return [String|nil] SingleLogoutService binding if exists
+      #
+      def single_logout_service_binding(binding_priority = nil)
+        nodes = REXML::XPath.match(
+          document,
+          "/md:EntityDescriptor/md:IDPSSODescriptor/md:SingleLogoutService/@Binding",
+          { "md" => METADATA }
+        )
+        if binding_priority
+          values = nodes.map(&:value)
+          binding_priority.detect{ |binding| values.include? binding }
+        else
+          nodes.first.value if nodes.any?
+        end
+      end
+
+      # @param options [Hash]
       # @return [String|nil] SingleLogoutService endpoint if exists
       #
-      def single_logout_service_url
+      def single_logout_service_url(options = {})
+        binding = options[:slo_binding] || "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect"
         node = REXML::XPath.first(
           document,
-          "/md:EntityDescriptor/md:IDPSSODescriptor/md:SingleLogoutService/@Location",
+          "/md:EntityDescriptor/md:IDPSSODescriptor/md:SingleLogoutService[@Binding=\"#{binding}\"]/@Location",
           { "md" => METADATA }
         )
         node.value if node
+      end
+
+      # @return [String|nil] Unformatted Certificate if exists
+      #
+      def certificate_base64
+        @certificate_base64 ||= begin
+          node = REXML::XPath.first(
+              document,
+              "/md:EntityDescriptor/md:IDPSSODescriptor/md:KeyDescriptor[@use='signing']/ds:KeyInfo/ds:X509Data/ds:X509Certificate",
+              { "md" => METADATA, "ds" => DSIG }
+          )
+
+          unless node
+            node = REXML::XPath.first(
+                document,
+                "/md:EntityDescriptor/md:IDPSSODescriptor/md:KeyDescriptor/ds:KeyInfo/ds:X509Data/ds:X509Certificate",
+                { "md" => METADATA, "ds" => DSIG }
+            )
+          end
+          node.text if node
+        end
       end
 
       # @return [String|nil] X509Certificate if exists
       #
       def certificate
         @certificate ||= begin
-          node = REXML::XPath.first(
-            document,
-            "/md:EntityDescriptor/md:IDPSSODescriptor/md:KeyDescriptor[@use='signing']/ds:KeyInfo/ds:X509Data/ds:X509Certificate",
-            { "md" => METADATA, "ds" => DSIG }
-          )
-          Base64.decode64(node.text) if node
+          Base64.decode64(certificate_base64) if certificate_base64
         end
       end
 
+
       # @return [String|nil] the SHA-1 fingerpint of the X509Certificate if it exists
       #
-      def fingerprint
+      def fingerprint(fingerprint_algorithm)
         @fingerprint ||= begin
           if certificate
             cert = OpenSSL::X509::Certificate.new(certificate)
-            Digest::SHA1.hexdigest(cert.to_der).upcase.scan(/../).join(":")
+
+            fingerprint_alg = XMLSecurity::BaseDocument.new.algorithm(fingerprint_algorithm).new
+            fingerprint_alg.hexdigest(cert.to_der).upcase.scan(/../).join(":")
           end
         end
+      end
+
+      # @return [Array] the names of all SAML attributes if any exist
+      #
+      def attribute_names
+        nodes = REXML::XPath.match(
+          document,
+          "/md:EntityDescriptor/md:IDPSSODescriptor/saml:Attribute/@Name",
+          { "md" => METADATA, "NameFormat" => NAME_FORMAT, "saml" => SAML_ASSERTION }
+        )
+        nodes.map(&:value)
       end
     end
   end
